@@ -3,7 +3,7 @@
 DRAIN_TIMESTAMP=$(condor_config_val -startd DRAIN_TIMESTAMP)
 
 if [  "$DRAIN_TIMESTAMP" == "Not defined" ]; then
-  :
+  exit
 else
 DRAIN_TIME_LIMIT=$(condor_config_val DRAIN_TIME_LIMIT)
 TIME=$(date +%s)
