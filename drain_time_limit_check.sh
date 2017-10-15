@@ -1,7 +1,5 @@
 #!/bin/sh
 
-#while [ 1 ]; do
-
 DRAIN_TIMESTAMP=$(condor_config_val -startd DRAIN_TIMESTAMP)
 
 if [  "$DRAIN_TIMESTAMP" == "Not defined" ]; then
@@ -16,7 +14,3 @@ if [ $(( $TIME - $DRAIN_TIMESTAMP )) -gt  $DRAIN_TIME_LIMIT ]; then
 fi
 
 fi
-
-#sleep $(( $DRAIN_TIME_LIMIT/10 ))
-
-#done
