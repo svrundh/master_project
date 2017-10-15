@@ -1,0 +1,249 @@
+heat_template_version: 2016-04-08
+description: Example auto scale group, policy and alarm
+
+parameters:
+  public_net_id:
+    type: string
+    description: >
+      ID of public network for which floating IP addresses will be allocated
+    default: 4d141790-c30d-495f-bd99-88848195ea43
+  private_net_id:
+    type: string
+    description: ID of private network into which servers get deployed
+    default: b43e0faf-44f7-4413-9d56-0eef7a9d953c
+  private_subnet_id:
+    type: string
+    description: ID of private sub network into which servers get deployed
+    default: 94195a92-6489-46cc-81ee-c627471de49b
+  ssh_key:
+    type: string
+    description: Name of ssh key that should be used for server access.
+    default: testkey
+
+resources:
+  profile:
+    type: OS::Senlin::Profile
+    properties:
+      type: os.nova.server
+      properties:
+        flavor: m1.small
+        block_device_mapping_v2:
+          - device_name: vda
+            boot_index: 0
+            delete_on_termination: true
+            uuid: 'ad88f0e2-a3a4-4c7e-a582-da3639c385c5'
+            source_type: image
+            destination_type: volume
+            volume_size: 1
+        key_name: testkey
+        metadata: {"metering.stack": {get_param: "OS::stack_id"}}
+        networks:
+          - network: private_network
+        security_groups:
+          - {get_resource: security_group}
+        user_data:
+          str_replace:
+            template: {get_file: workerInstall.sh}
+            params:
+              "STATIC_IP":
+                get_attr:
+                  - static_port
+                  - fixed_ips
+                  - 0
+                  - ip_address
+              "DRAIN_TIME_LIMIT_CHECK_SH_FILE": {get_file: drain_time_limit_check.sh}
+
+  cluster:
+    type: OS::Senlin::Cluster
+    depends_on:
+      - wait_condition
+    properties:
+      desired_capacity: 6
+      min_size: 1
+      max_size: 6
+      profile: {get_resource: profile}
+
+  scale_in_policy:
+    type: OS::Senlin::Policy
+    properties:
+      type: senlin.policy.scaling
+      bindings:
+        - cluster: {get_resource: cluster}
+      properties:
+        event: CLUSTER_SCALE_IN
+        adjustment:
+          type: CHANGE_IN_CAPACITY
+          number: 1
+          cooldown: 60
+
+  htcondor_deletion_policy:
+    type: OS::Senlin::Policy
+    properties:
+      type: senlin.policy.htcondor_deletion
+      bindings:
+        - cluster: {get_resource: cluster}
+      properties:
+        central_manager_ip: {get_attr: [static_floating_ip, floating_ip_address]}
+        ssh_key: {get_file: "senlin_ssh_key.key"}
+        user_name: alienvo
+        delete_repeat_interval: 600
+        graceful_shutdown_time_limit: 3600
+
+  scale_out_policy:
+    type: OS::Senlin::Policy
+    properties:
+      type: senlin.policy.scaling
+      bindings:
+        - cluster: {get_resource: cluster}
+      properties:
+        event: CLUSTER_SCALE_OUT
+        adjustment:
+          type: CHANGE_IN_CAPACITY
+          number: 1
+          cooldown: 60
+
+  receiver_scale_out:
+    type: OS::Senlin::Receiver
+    properties:
+      cluster: {get_resource: cluster}
+      action: CLUSTER_SCALE_OUT
+      type: webhook
+
+  receiver_scale_in:
+    type: OS::Senlin::Receiver
+    properties:
+      cluster: {get_resource: cluster}
+      action: CLUSTER_SCALE_IN
+      type: webhook
+
+  cpu_alarm_high:
+    type: OS::Aodh::Alarm
+    properties:
+      meter_name: cpu_util
+      statistic: avg
+      period: 60
+      evaluation_periods: 1
+      threshold: 50
+      alarm_actions:
+        - {get_attr: [receiver_scale_out, channel, alarm_url]}
+      comparison_operator: gt
+      matching_metadata: {'metadata.user_metadata.stack': {get_param: "OS::stack_id"}}
+
+  cpu_alarm_low:
+    type: OS::Aodh::Alarm
+    properties:
+      meter_name: cpu_util
+      statistic: avg
+      period: 60
+      evaluation_periods: 1
+      threshold: 10
+      alarm_actions:
+        - {get_attr: [receiver_scale_in, channel, alarm_url]}
+      comparison_operator: lt
+      matching_metadata: {'metadata.user_metadata.stack': {get_param: "OS::stack_id"}}
+
+  wait_handle:
+    type: OS::Heat::WaitConditionHandle
+
+  wait_condition:
+    type: OS::Heat::WaitCondition
+    properties:
+      handle: {get_resource: wait_handle}
+      timeout: "900"
+
+  condor_master:
+    type: OS::Nova::Server
+    properties:
+      flavor: m1.small
+      block_device_mapping_v2:
+        - device_name: vda
+          boot_index: 0
+          delete_on_termination: true
+          image: 'CernVM-400'
+          volume_size: 2
+      networks:
+        - port: {get_resource: static_port}
+      key_name: {get_param: ssh_key}
+      user_data:
+        str_replace:
+          template: {get_file: masterinstall.sh}
+          params:
+            "wc_notify":
+              get_attr: ['wait_handle', 'curl_cli']
+            "STATIC_IP":
+              get_attr:
+                - static_port
+                - fixed_ips
+                - 0
+                - ip_address
+
+  static_port:
+    type: OS::Neutron::Port
+    properties:
+      security_groups:
+        - {get_resource: security_group}
+      network_id: { get_param: private_net_id }
+      fixed_ips:
+        - subnet_id: { get_param: private_subnet_id }
+
+  static_floating_ip:
+    type: OS::Neutron::FloatingIP
+    properties:
+      floating_network_id: {get_param: public_net_id}
+      port_id: {get_resource: static_port}
+
+  security_group:
+    type: OS::Neutron::SecurityGroup
+    properties:
+      rules:
+        - protocol: icmp
+        - protocol: tcp
+          port_range_min: 22
+          port_range_max: 22
+        - protocol: tcp
+          port_range_min: 1093
+          port_range_max: 1093
+        - protocol: tcp
+          port_range_min: 8084
+          port_range_max: 8084
+        - protocol: tcp
+          port_range_min: 8649
+          port_range_max: 8649
+
+outputs:
+  cluster_id:
+    description: >
+      ID of Senlin cluster.
+    value: {get_resource: cluster}
+  scale_out_command:
+    description: >
+      Command for scaling out cluster
+    value:
+      str_replace:
+        template: >
+          openstack cluster expand cluster_id
+        params:
+          cluster_id: {get_resource: cluster}
+  scale_in_command:
+    description: >
+      Command for scaling in cluster
+    value:
+      str_replace:
+        template: >
+          openstack cluster shrink cluster_id
+        params:
+          cluster_id: {get_resource: cluster}
+  out_stack_key:
+    description: >
+      Output key for stack
+    value: {get_param: "OS::stack_id"}
+  ceilometer_query:
+    value:
+      str_replace:
+        template: >
+          ceilometer statistics -m cpu_util
+          -q metadata.user_metadata.stack=stackval -p 600 -a avg
+        params:
+          stackval: {get_param: "OS::stack_id"}
+    description: >
+      This is a Ceilometer query for statistics on the cpu_util meter.
