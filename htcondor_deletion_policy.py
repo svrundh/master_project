@@ -297,7 +297,7 @@ class HTCondorDeletionPolicy(base.Policy):
                 now = datetime.datetime.utcnow()
                 if (now - datetime.datetime.strptime(action.entity.data['draining_start_time'],
                                                      '%Y-%m-%dT%H:%M:%S.%f')).seconds > self.graceful_shutdown_time_limit:
-                    preempt_count = count - len(candidates)  # min(count, action.entity.data['residuals'])
+                    preempt_count = count - len(candidates)
                     preempt_candidates = [node for node in cluster.nodes if node not in candidates]
                     nodes_to_be_preempted = [nm.Node.load(action.context, node_id) for node_id in
                                              su.nodes_by_age(preempt_candidates, preempt_count, True)]
@@ -306,7 +306,6 @@ class HTCondorDeletionPolicy(base.Policy):
             # Adds residuals if 'count' nodes could not be removed. If there are already residuals
             # waiting to be deleted, residuals is set to the highest of count - candidates and residuals.
             # This avoids too many residuals to be added as result of repeated delete attempts.
-            # self._set_residuals_count(action, max(count - len(candidates), action.entity.data.get('residuals', 0)))
             if count > action.entity.data.get('residuals', 0):
                 self._set_residuals_count(action, count - len(candidates))
             else:
